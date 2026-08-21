@@ -94,6 +94,60 @@ type StoredAttachment struct {
 	SHA256      string
 }
 
+type AttachmentStage uint8
+
+const (
+	AttachmentAllocated AttachmentStage = iota + 1
+	AttachmentWritten
+	AttachmentSynced
+	AttachmentPromoted
+)
+
+type AttachmentCommit struct {
+	id          string
+	path        string
+	contentType string
+	size        int64
+	digest      string
+	stage       AttachmentStage
+}
+
+func NewAttachmentCommit(id, path, contentType string) AttachmentCommit {
+	return AttachmentCommit{id: id, path: path, contentType: contentType, stage: AttachmentAllocated}
+}
+
+func (c *AttachmentCommit) MarkWritten(size int64, digest string) {
+	c.size = size
+	c.digest = digest
+	c.stage = AttachmentWritten
+}
+
+func (c *AttachmentCommit) MarkSynced() {
+	if c.stage == AttachmentWritten {
+		c.stage = AttachmentSynced
+	}
+}
+
+func (c *AttachmentCommit) MarkPromoted() {
+	if c.stage == AttachmentSynced {
+		c.stage = AttachmentPromoted
+	}
+}
+
+func (c AttachmentCommit) Promoted() bool {
+	return c.stage == AttachmentPromoted
+}
+
+func (c AttachmentCommit) Attachment() StoredAttachment {
+	return StoredAttachment{
+		ID:          c.id,
+		Path:        c.path,
+		ContentType: c.contentType,
+		Size:        c.size,
+		SHA256:      c.digest,
+	}
+}
+
 type AttachmentStore interface {
 	Save(ctx context.Context, name, contentType string, size int64, reader io.Reader) (StoredAttachment, error)
 	Open(ctx context.Context, id string) (io.ReadCloser, StoredAttachment, error)

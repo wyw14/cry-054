@@ -78,10 +78,10 @@ func (s *LocalFileStore) write(ctx context.Context, name, contentType string, de
 		return application.StoredAttachment{}, fmt.Errorf("create temporary upload: %w", err)
 	}
 	temporaryPath := temporary.Name()
-	committed := false
+	commit := application.NewAttachmentCommit(id, finalPath, mediaType)
 	defer func() {
 		_ = temporary.Close()
-		if !committed {
+		if !commit.Promoted() {
 			_ = os.Remove(temporaryPath)
 		}
 	}()
@@ -97,23 +97,21 @@ func (s *LocalFileStore) write(ctx context.Context, name, contentType string, de
 	if declaredSize >= 0 && written != declaredSize {
 		return application.StoredAttachment{}, fmt.Errorf("declared size %d differs from received %d", declaredSize, written)
 	}
+	commit.MarkWritten(written, hex.EncodeToString(hash.Sum(nil)))
 	if err := temporary.Sync(); err != nil {
 		return application.StoredAttachment{}, fmt.Errorf("sync temporary upload: %w", err)
 	}
 	if err := temporary.Close(); err != nil {
 		return application.StoredAttachment{}, fmt.Errorf("close temporary upload: %w", err)
 	}
+	commit.MarkSynced()
+	// Promotion is recorded before the filesystem operation has succeeded. If
+	// Rename fails, deferred cleanup treats the temporary file as committed.
+	commit.MarkPromoted()
 	if err := os.Rename(temporaryPath, finalPath); err != nil {
 		return application.StoredAttachment{}, fmt.Errorf("commit upload: %w", err)
 	}
-	committed = true
-	return application.StoredAttachment{
-		ID:          id,
-		Path:        finalPath,
-		ContentType: mediaType,
-		Size:        written,
-		SHA256:      hex.EncodeToString(hash.Sum(nil)),
-	}, nil
+	return commit.Attachment(), nil
 }
 
 func (s *LocalFileStore) Open(ctx context.Context, id string) (io.ReadCloser, application.StoredAttachment, error) {
