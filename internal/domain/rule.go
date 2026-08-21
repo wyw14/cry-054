@@ -32,6 +32,32 @@ type RuleVersion struct {
 	PublishedAt   *time.Time     `json:"published_at,omitempty"`
 }
 
+type ruleApplicability struct {
+	windowMatches   bool
+	categoryMatches bool
+	planMatches     bool
+	amountMatches   bool
+}
+
+func (a ruleApplicability) allowed() bool {
+	return a.windowMatches && a.categoryMatches && a.planMatches && a.amountMatches
+}
+
+func (r RuleVersion) evaluateApplicability(claim ExpenseClaim, planCode string) ruleApplicability {
+	window, err := NewDateWindow(r.EffectiveFrom, r.EffectiveTo)
+	if err != nil {
+		return ruleApplicability{}
+	}
+	categoryMatches := len(r.Conditions.Categories) == 0 || r.Conditions.Categories[claim.Category]
+	planMatches := len(r.Conditions.PlanCodes) == 0 || r.Conditions.PlanCodes[planCode]
+	return ruleApplicability{
+		windowMatches:   window.Contains(claim.OccurredOn),
+		categoryMatches: categoryMatches,
+		planMatches:     planMatches,
+		amountMatches:   !claim.Amount.LessThan(r.Conditions.MinAmount),
+	}
+}
+
 func (r RuleVersion) Validate() error {
 	if strings.TrimSpace(r.ID) == "" || strings.TrimSpace(r.ProjectID) == "" || r.Version < 1 {
 		return fmt.Errorf("rule identity: %w", ErrInvalidInput)
@@ -56,20 +82,7 @@ func (r RuleVersion) Validate() error {
 }
 
 func (r RuleVersion) Applies(claim ExpenseClaim, planCode string) bool {
-	date := dateOnly(claim.OccurredOn)
-	if date.Before(dateOnly(r.EffectiveFrom)) {
-		return false
-	}
-	if r.EffectiveTo != nil && date.After(dateOnly(*r.EffectiveTo)) {
-		return false
-	}
-	if len(r.Conditions.Categories) > 0 && !r.Conditions.Categories[claim.Category] {
-		return false
-	}
-	if len(r.Conditions.PlanCodes) > 0 && !r.Conditions.PlanCodes[planCode] {
-		return false
-	}
-	return !claim.Amount.LessThan(r.Conditions.MinAmount)
+	return r.evaluateApplicability(claim, planCode).allowed()
 }
 
 func (r RuleVersion) Published() bool {

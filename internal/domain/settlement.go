@@ -31,12 +31,28 @@ type Preview struct {
 	LedgerVersionUsed int64             `json:"ledger_version_used"`
 }
 
+func validatePreviewRule(claim ExpenseClaim, rule RuleVersion, ledger AnnualLedger) error {
+	if rule.ID == "" || rule.ProjectID == "" {
+		return fmt.Errorf("preview rule identity is incomplete: %w", ErrInvalidInput)
+	}
+	if rule.ProjectID != claim.ProjectID || ledger.ProjectID != claim.ProjectID {
+		return fmt.Errorf("preview rule project mismatch: %w", ErrInvalidInput)
+	}
+	if !rule.Published() {
+		return fmt.Errorf("preview rule is not published: %w", ErrRuleNotApplicable)
+	}
+	if !rule.Applies(claim, ledger.PlanCode) {
+		return fmt.Errorf("rule %s does not apply to claim %s: %w", rule.ID, claim.ID, ErrRuleNotApplicable)
+	}
+	return nil
+}
+
 func CalculatePreview(claim ExpenseClaim, rule RuleVersion, project GrantProject, ledger AnnualLedger, now time.Time) (Preview, error) {
 	if claim.ProjectID != project.ID || ledger.ProjectID != project.ID || ledger.ClaimantID != claim.ClaimantID {
 		return Preview{}, fmt.Errorf("preview aggregate mismatch: %w", ErrInvalidInput)
 	}
-	if !rule.Applies(claim, ledger.PlanCode) {
-		return Preview{}, fmt.Errorf("rule %s does not apply to claim %s: %w", rule.ID, claim.ID, ErrRuleNotApplicable)
+	if err := validatePreviewRule(claim, rule, ledger); err != nil {
+		return Preview{}, err
 	}
 	remaining := project.AnnualLimit.Sub(ledger.Occupied).Max(ZeroMoney)
 	eligible := claim.Amount.Min(rule.Cap)

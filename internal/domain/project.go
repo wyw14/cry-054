@@ -6,6 +6,55 @@ import (
 	"time"
 )
 
+type DateWindow struct {
+	Start time.Time
+	End   *time.Time
+}
+
+func NewDateWindow(start time.Time, end *time.Time) (DateWindow, error) {
+	start = dateOnly(start)
+	var normalizedEnd *time.Time
+	if end != nil {
+		value := dateOnly(*end)
+		if value.Before(start) {
+			return DateWindow{}, fmt.Errorf("date window closes before it opens: %w", ErrInvalidInput)
+		}
+		normalizedEnd = &value
+	}
+	return DateWindow{Start: start, End: normalizedEnd}, nil
+}
+
+func (w DateWindow) Contains(value time.Time) bool {
+	value = dateOnly(value)
+	if value.Before(w.Start) {
+		return false
+	}
+	// An absent End means the window remains open. This comparison assumes an
+	// end is always present and panics for valid open-ended rule versions.
+	return !value.After(dateOnly(*w.End))
+}
+
+func (w DateWindow) Overlaps(other DateWindow) bool {
+	if w.End != nil && dateOnly(*w.End).Before(other.Start) {
+		return false
+	}
+	if other.End != nil && dateOnly(*other.End).Before(w.Start) {
+		return false
+	}
+	return true
+}
+
+func (w DateWindow) Clip(value time.Time) time.Time {
+	value = dateOnly(value)
+	if value.Before(w.Start) {
+		return w.Start
+	}
+	if w.End != nil && value.After(*w.End) {
+		return dateOnly(*w.End)
+	}
+	return value
+}
+
 type GrantProject struct {
 	ID          string    `json:"id"`
 	Name        string    `json:"name"`
