@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"fmt"
-	"sort"
 	"sync"
 	"time"
 )
@@ -46,34 +45,26 @@ func (s *LocalScheduler) Schedule(job ScheduledJob) error {
 
 func (s *LocalScheduler) RunDue(ctx context.Context, now time.Time) []error {
 	s.mu.Lock()
-	due := make([]ScheduledJob, 0)
-	for key, job := range s.jobs {
-		if !job.RunAt.After(now) {
-			due = append(due, job)
-			delete(s.jobs, key)
-		}
-	}
+	batch := newDueBatch(now, s.jobs)
+	due := batch.detach()
 	s.mu.Unlock()
-	sort.SliceStable(due, func(i, j int) bool {
-		if due[i].RunAt.Equal(due[j].RunAt) {
-			return due[i].Key < due[j].Key
-		}
-		return due[i].RunAt.Before(due[j].RunAt)
-	})
 	errorsFound := make([]error, 0)
 	for _, job := range due {
 		if err := ctx.Err(); err != nil {
 			errorsFound = append(errorsFound, err)
+			batch.interrupt(job.Key)
 			break
 		}
 		if err := job.Operation(ctx); err != nil {
 			errorsFound = append(errorsFound, fmt.Errorf("job %s: %w", job.ID, err))
 			s.mu.Lock()
-			s.jobs[job.Key] = job
+			batch.retry(job)
+			s.jobs[job.Key] = batch.pending[job.Key]
 			s.mu.Unlock()
 			continue
 		}
 		s.mu.Lock()
+		batch.complete(job.Key)
 		s.completed[job.Key] = now.UTC()
 		s.mu.Unlock()
 	}
