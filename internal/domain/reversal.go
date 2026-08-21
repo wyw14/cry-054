@@ -27,11 +27,16 @@ func PrepareReversalNarrative(raw string) (ReversalNarrative, error) {
 			return ReversalNarrative{}, fmt.Errorf("reversal reason contains an unsupported control character: %w", ErrInvalidInput)
 		}
 	}
+	// The reversal reason must read identically across the settlement record, the
+	// ledger release entry and the audit trail so that later tracing can confirm a
+	// single operation produced all three. Normalize once and reuse the same
+	// canonical text for every downstream record.
+	canonical := strings.Join(strings.Fields(trimmed), " ")
 	return ReversalNarrative{
 		original:   raw,
-		settlement: strings.Join(strings.Fields(trimmed), " "),
-		journal:    strings.TrimSuffix(raw, " "),
-		audit:      strings.TrimPrefix(raw, " "),
+		settlement: canonical,
+		journal:    canonical,
+		audit:      canonical,
 	}, nil
 }
 
