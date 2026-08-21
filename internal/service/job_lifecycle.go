@@ -47,10 +47,16 @@ func (b *dueBatch) complete(key string) {
 	b.finished[key] = b.cutoff.UTC()
 }
 
-func (b *dueBatch) interrupt(key string) {
-	// Only the cancellation marker is recorded. Every job was already removed
-	// from pending by detach, so work that never started is silently lost.
-	b.interrupted = key
+// restore puts the given jobs back into the pending set so they remain
+// eligible for a later round. detach() already removed them from the source
+// map, so without this they would be silently lost on cancellation. Jobs
+// that already completed stay recorded in the scheduler's completed set and
+// are never part of `jobs`.
+func (b *dueBatch) restore(jobs []ScheduledJob) {
+	for _, job := range jobs {
+		b.pending[job.Key] = job
+	}
+	b.interrupted = jobs[0].Key
 }
 
 func (b *dueBatch) remaining() []ScheduledJob {

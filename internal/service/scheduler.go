@@ -49,10 +49,17 @@ func (s *LocalScheduler) RunDue(ctx context.Context, now time.Time) []error {
 	due := batch.detach()
 	s.mu.Unlock()
 	errorsFound := make([]error, 0)
-	for _, job := range due {
+	for i, job := range due {
 		if err := ctx.Err(); err != nil {
 			errorsFound = append(errorsFound, err)
-			batch.interrupt(job.Key)
+			// Cancellation arrived before this job started. detach() already
+			// pulled every due job out of s.jobs, so the jobs from here onward
+			// have no home. Restore them to the pending set under the lock so
+			// they remain eligible for a later round; jobs already completed
+			// (index < i) live in s.completed and are not touched here.
+			s.mu.Lock()
+			batch.restore(due[i:])
+			s.mu.Unlock()
 			break
 		}
 		if err := job.Operation(ctx); err != nil {
