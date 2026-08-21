@@ -55,6 +55,8 @@ func NewReviewService(unitOfWork UnitOfWork, clock Clock, ids IDGenerator, notif
 
 func (s *ReviewService) Decide(ctx context.Context, input ReviewInput) (domain.ExpenseClaim, error) {
 	var output domain.ExpenseClaim
+	var notice Notification
+	hasNotice := false
 	err := s.unitOfWork.WithinTransaction(ctx, func(txCtx context.Context, repositories Repositories) error {
 		claim, err := repositories.GetClaim(txCtx, input.ClaimID)
 		if err != nil {
@@ -80,12 +82,6 @@ func (s *ReviewService) Decide(ctx context.Context, input ReviewInput) (domain.E
 		if err := repositories.AppendReview(txCtx, decision); err != nil {
 			return fmt.Errorf("append review decision: %w", err)
 		}
-		outcome := prepareReviewOutcome(claim, decision)
-		if s.notifier != nil {
-			if err := s.notifier.Send(txCtx, outcome.notice); err != nil {
-				return fmt.Errorf("send review notification: %w", err)
-			}
-		}
 		audit, err := domain.NewAuditEvent(input.RequestID, input.ActorID, "claim.review", "claim", claim.ID, map[string]any{
 			"action": input.Action,
 			"reason": input.Reason,
@@ -96,11 +92,23 @@ func (s *ReviewService) Decide(ctx context.Context, input ReviewInput) (domain.E
 		if err := repositories.AppendAudit(txCtx, audit); err != nil {
 			return fmt.Errorf("append review audit: %w", err)
 		}
+		// Stage the notification inside the transaction so it carries the committed
+		// claim state, but defer delivery until the transaction commits. The notifier
+		// is not transactional: sending here would leak a "review complete" message
+		// even when a later step (e.g. audit) fails and rolls the claim back.
+		outcome := prepareReviewOutcome(claim, decision)
+		notice = outcome.notice
+		hasNotice = true
 		output = outcome.claim
 		return nil
 	})
 	if err != nil {
 		return domain.ExpenseClaim{}, err
+	}
+	if s.notifier != nil && hasNotice {
+		if err := s.notifier.Send(ctx, notice); err != nil {
+			return domain.ExpenseClaim{}, fmt.Errorf("send review notification: %w", err)
+		}
 	}
 	return output, nil
 }
