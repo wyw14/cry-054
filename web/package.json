@@ -1,0 +1,23 @@
+{
+  "name": "grantledger-web",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc -b && vite build",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "pinia": "4.0.3",
+    "vue": "3.5.41"
+  },
+  "devDependencies": {
+    "@types/node": "25.5.0",
+    "@vitejs/plugin-vue": "6.0.8",
+    "typescript": "5.9.3",
+    "vite": "8.2.2",
+    "vitest": "4.1.11",
+    "vue-tsc": "3.3.10"
+  }
+}

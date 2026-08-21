@@ -1,0 +1,64 @@
+openapi: 3.0.3
+info:
+  title: GrantLedger API
+  version: 1.0.0
+servers:
+  - url: /api/v1
+paths:
+  /claims:
+    post:
+      summary: 创建费用申报
+      responses:
+        '201': {description: created}
+        '422': {description: invalid claim}
+    get:
+      summary: 分页查询申报
+      responses:
+        '200': {description: page}
+  /claims/{id}/preview:
+    post:
+      summary: 预结算试算
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {description: preview}
+  /claims/{id}/confirm:
+    post:
+      summary: 确认结算
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {description: confirmed}
+        '409': {description: version conflict}
+  /reviews/{id}/decision:
+    post:
+      summary: 人工复核决定
+      responses:
+        '200': {description: reviewed}
+  /ledgers/{claimant}/{year}:
+    get:
+      summary: 查询年度累计台账
+      responses:
+        '200': {description: ledger}
+  /exports/settlements:
+    post:
+      summary: 创建受控导出
+      responses:
+        '202': {description: export accepted}
+  /healthz:
+    get:
+      summary: 存活检查
+      responses:
+        '200': {description: alive}
+  /readyz:
+    get:
+      summary: 就绪检查
+      responses:
+        '200': {description: ready}
+
