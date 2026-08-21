@@ -71,6 +71,9 @@ func ErrorCode(err error) string {
 		if business.Code == "CLAIMANT_INACTIVE" {
 			return "CLAIMANT_INACTIVE"
 		}
+		if business.Code == "DUPLICATE_CLAIM" {
+			return "DUPLICATE_CLAIM"
+		}
 		if business.Code != "" {
 			return "INTERNAL_ERROR"
 		}

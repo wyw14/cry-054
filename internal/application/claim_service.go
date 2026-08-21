@@ -92,10 +92,13 @@ func (s *ClaimService) Create(ctx context.Context, input CreateClaimInput) (doma
 		if !receiptIdentity.Matches(duplicate) {
 			return domain.ExpenseClaim{}, false, domain.NewBusinessError("DUPLICATE_CHECK_FAILED", "receipt index is inconsistent", nil)
 		}
+		// Same applicant resubmits an already-filed receipt under a fresh idempotency key.
+		// Wrap ErrDuplicateClaim so the transport layer maps this to 409 Conflict with the
+		// stable DUPLICATE_CLAIM code instead of collapsing into a generic 500/validation error.
 		return domain.ExpenseClaim{}, false, domain.NewBusinessError(
-			"VALIDATION_FAILED",
+			"DUPLICATE_CLAIM",
 			"receipt digest must be unique",
-			nil,
+			domain.ErrDuplicateClaim,
 		)
 	}
 	if duplicateErr != nil && duplicateErr != domain.ErrNotFound {
