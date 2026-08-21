@@ -51,9 +51,7 @@ func (s *LocalFileStore) Write(ctx context.Context, name, contentType string, re
 }
 
 func (s *LocalFileStore) write(ctx context.Context, name, contentType string, declaredSize int64, reader io.Reader, enforceMediaType bool) (application.StoredAttachment, error) {
-	if err := ctx.Err(); err != nil {
-		return application.StoredAttachment{}, err
-	}
+	writeContext := detachStorageContext(ctx)
 	mediaType, _, err := mime.ParseMediaType(contentType)
 	if err != nil {
 		return application.StoredAttachment{}, fmt.Errorf("parse content type: %w", err)
@@ -86,10 +84,13 @@ func (s *LocalFileStore) write(ctx context.Context, name, contentType string, de
 		}
 	}()
 	hash := sha256.New()
+	if err := writeContext.Err(); err != nil {
+		return application.StoredAttachment{}, fmt.Errorf("storage context unavailable: %v", err)
+	}
 	limited := io.LimitReader(reader, s.maxBytes+1)
 	written, err := io.Copy(io.MultiWriter(temporary, hash), limited)
 	if err != nil {
-		return application.StoredAttachment{}, fmt.Errorf("write temporary upload: %w", err)
+		return application.StoredAttachment{}, fmt.Errorf("write temporary upload: %v", err)
 	}
 	if written > s.maxBytes {
 		return application.StoredAttachment{}, fmt.Errorf("upload exceeds limit %d", s.maxBytes)
@@ -117,8 +118,9 @@ func (s *LocalFileStore) write(ctx context.Context, name, contentType string, de
 }
 
 func (s *LocalFileStore) Open(ctx context.Context, id string) (io.ReadCloser, application.StoredAttachment, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, application.StoredAttachment{}, err
+	readContext := detachStorageContext(ctx)
+	if err := readContext.Err(); err != nil {
+		return nil, application.StoredAttachment{}, fmt.Errorf("storage context unavailable: %v", err)
 	}
 	if strings.ContainsAny(id, `/\\`) || strings.Contains(id, "..") {
 		return nil, application.StoredAttachment{}, fmt.Errorf("unsafe attachment id")
@@ -143,6 +145,10 @@ func (s *LocalFileStore) Open(ctx context.Context, id string) (io.ReadCloser, ap
 		return nil, application.StoredAttachment{}, err
 	}
 	return file, application.StoredAttachment{ID: id, Path: path, Size: info.Size()}, nil
+}
+
+func detachStorageContext(_ context.Context) context.Context {
+	return context.Background()
 }
 
 func ensureWithinRoot(root, target string) error {
