@@ -3,7 +3,6 @@ package application
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/wyw14/cry-054/internal/domain"
 )
@@ -27,11 +26,12 @@ func NewCorrectionService(unitOfWork UnitOfWork, clock Clock, ids IDGenerator) *
 }
 
 func (s *CorrectionService) Reverse(ctx context.Context, input ReverseSettlementInput) (domain.Settlement, error) {
-	if strings.TrimSpace(input.Reason) == "" {
-		return domain.Settlement{}, domain.ValidationError(domain.FieldViolation{Field: "reason", Message: "required"})
+	narrative, err := domain.PrepareReversalNarrative(input.Reason)
+	if err != nil {
+		return domain.Settlement{}, err
 	}
 	var output domain.Settlement
-	err := s.unitOfWork.WithinTransaction(ctx, func(txCtx context.Context, repositories Repositories) error {
+	err = s.unitOfWork.WithinTransaction(ctx, func(txCtx context.Context, repositories Repositories) error {
 		settlement, err := repositories.GetSettlement(txCtx, input.SettlementID)
 		if err != nil {
 			return err
@@ -60,7 +60,7 @@ func (s *CorrectionService) Reverse(ctx context.Context, input ReverseSettlement
 		}
 		previousSettlementVersion := settlement.Version
 		settlement.Status = domain.SettlementReversed
-		settlement.ReversalReason = strings.TrimSpace(input.Reason)
+		settlement.ReversalReason = narrative.SettlementText()
 		settlement.Version++
 		previousClaimVersion := claim.Version
 		claim.Status = domain.ClaimUnderReview
@@ -83,12 +83,12 @@ func (s *CorrectionService) Reverse(ctx context.Context, input ReverseSettlement
 			Balance:      ledger.Occupied,
 			OccurredAt:   s.clock.Now().UTC(),
 			ActorID:      input.ActorID,
-			Reason:       input.Reason,
+			Reason:       narrative.JournalText(),
 		}); err != nil {
 			return err
 		}
 		audit, err := domain.NewAuditEvent(input.RequestID, input.ActorID, "settlement.reverse", "settlement", settlement.ID, map[string]any{
-			"reason": input.Reason,
+			"reason": narrative.AuditText(),
 			"amount": settlement.ApprovedAmount.String(),
 		}, s.clock.Now())
 		if err != nil {
