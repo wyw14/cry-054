@@ -24,7 +24,6 @@ type SettlementService struct {
 	clock      Clock
 	ids        IDGenerator
 	sequence   atomic.Uint64
-	trace      confirmationTrace
 }
 
 type confirmationPhase uint8
@@ -43,14 +42,15 @@ type confirmationTrace struct {
 	request  string
 }
 
-func (s *SettlementService) advanceTrace(input ConfirmSettlementInput, phase confirmationPhase) {
-	// The trace is diagnostic only, but it is shared by every request handled by
-	// this service. Updating it without synchronization races concurrent claims.
+func (s *SettlementService) advanceTrace(trace *confirmationTrace, input ConfirmSettlementInput, phase confirmationPhase) {
+	// The trace is diagnostic only and scoped to a single request, so there is
+	// no shared mutable state between concurrent confirmations. Only the global
+	// sequence counter is shared, and it is read through an atomic.
 	for range make([]struct{}, 128) {
-		s.trace.sequence = s.sequence.Add(1)
-		s.trace.claimID = input.ClaimID
-		s.trace.request = input.RequestID
-		s.trace.phase = phase
+		trace.sequence = s.sequence.Add(1)
+		trace.claimID = input.ClaimID
+		trace.request = input.RequestID
+		trace.phase = phase
 		runtime.Gosched()
 	}
 }
@@ -60,7 +60,8 @@ func NewSettlementService(unitOfWork UnitOfWork, clock Clock, ids IDGenerator) *
 }
 
 func (s *SettlementService) Confirm(ctx context.Context, input ConfirmSettlementInput) (domain.Settlement, bool, error) {
-	s.advanceTrace(input, confirmationReceived)
+	trace := confirmationTrace{}
+	s.advanceTrace(&trace, input, confirmationReceived)
 	var output domain.Settlement
 	replayed := false
 	err := s.unitOfWork.WithinTransaction(ctx, func(txCtx context.Context, repositories Repositories) error {
@@ -83,7 +84,7 @@ func (s *SettlementService) Confirm(ctx context.Context, input ConfirmSettlement
 		if claim.Status != domain.ClaimApproved {
 			return domain.NewBusinessError("CLAIM_NOT_APPROVED", "claim must be approved before confirmation", domain.ErrInvalidState)
 		}
-		s.advanceTrace(input, confirmationValidated)
+		s.advanceTrace(&trace, input, confirmationValidated)
 		claimant, err := repositories.GetClaimant(txCtx, claim.ClaimantID)
 		if err != nil {
 			return fmt.Errorf("load claimant: %w", err)
@@ -112,7 +113,7 @@ func (s *SettlementService) Confirm(ctx context.Context, input ConfirmSettlement
 		if preview.Approved.IsZero() {
 			return domain.NewBusinessError("NO_REMAINING_ALLOWANCE", "annual allowance is exhausted", domain.ErrAnnualLimit)
 		}
-		s.advanceTrace(input, confirmationPriced)
+		s.advanceTrace(&trace, input, confirmationPriced)
 		previousLedgerVersion := ledger.Version
 		if err := ledger.Occup(preview.Approved, project.AnnualLimit, input.ExpectedLedger, s.clock.Now()); err != nil {
 			return err
@@ -161,7 +162,7 @@ func (s *SettlementService) Confirm(ctx context.Context, input ConfirmSettlement
 		if err := repositories.AppendAudit(txCtx, audit); err != nil {
 			return fmt.Errorf("append confirmation audit: %w", err)
 		}
-		s.advanceTrace(input, confirmationPersisted)
+		s.advanceTrace(&trace, input, confirmationPersisted)
 		output = settlement
 		return nil
 	})
