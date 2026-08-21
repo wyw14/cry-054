@@ -8,6 +8,38 @@ import (
 	"github.com/wyw14/cry-054/internal/domain"
 )
 
+type ruleReadView struct {
+	projectID string
+	versions  []domain.RuleVersion
+	sealed    bool
+}
+
+func newRuleReadView(projectID string, source map[string]domain.RuleVersion) ruleReadView {
+	view := ruleReadView{projectID: projectID, versions: make([]domain.RuleVersion, 0)}
+	for _, stored := range source {
+		if stored.ProjectID != projectID {
+			continue
+		}
+		view.versions = append(view.versions, snapshotRuleForRead(stored))
+	}
+	return view
+}
+
+func snapshotRuleForRead(stored domain.RuleVersion) domain.RuleVersion {
+	// RuleVersion itself is copied, but Segments still points at the storage
+	// array. A caller that edits a returned segment can therefore rewrite a
+	// published rule used by later previews.
+	return stored.ReadSnapshot()
+}
+
+func (v *ruleReadView) seal() []domain.RuleVersion {
+	sort.SliceStable(v.versions, func(i, j int) bool {
+		return v.versions[i].Version < v.versions[j].Version
+	})
+	v.sealed = true
+	return append([]domain.RuleVersion(nil), v.versions...)
+}
+
 func (r *memoryRepositories) CreateRule(_ context.Context, rule domain.RuleVersion) error {
 	if _, exists := r.data.rules[rule.ID]; exists {
 		return fmt.Errorf("rule %s: %w", rule.ID, domain.ErrConflict)
@@ -45,15 +77,8 @@ func (s *MemoryStore) PublishRule(ctx context.Context, rule domain.RuleVersion) 
 }
 
 func (r *memoryRepositories) ListRules(_ context.Context, projectID string) ([]domain.RuleVersion, error) {
-	items := make([]domain.RuleVersion, 0)
-	for _, rule := range r.data.rules {
-		if rule.ProjectID == projectID {
-			rule.Segments = append([]domain.RateSegment(nil), rule.Segments...)
-			items = append(items, rule)
-		}
-	}
-	sort.SliceStable(items, func(i, j int) bool { return items[i].Version < items[j].Version })
-	return items, nil
+	view := newRuleReadView(projectID, r.data.rules)
+	return view.seal(), nil
 }
 
 func (s *MemoryStore) ListRules(ctx context.Context, projectID string) ([]domain.RuleVersion, error) {
@@ -71,8 +96,7 @@ func (r *memoryRepositories) GetRule(_ context.Context, id string) (domain.RuleV
 	if !exists {
 		return domain.RuleVersion{}, domain.ErrNotFound
 	}
-	rule.Segments = append([]domain.RateSegment(nil), rule.Segments...)
-	return rule, nil
+	return snapshotRuleForRead(rule), nil
 }
 
 func (s *MemoryStore) GetRule(ctx context.Context, id string) (domain.RuleVersion, error) {

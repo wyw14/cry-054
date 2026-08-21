@@ -32,6 +32,22 @@ type RuleVersion struct {
 	PublishedAt   *time.Time     `json:"published_at,omitempty"`
 }
 
+func (r RuleVersion) ReadSnapshot() RuleVersion {
+	// The snapshot copies the rule value but reuses nested segment storage.
+	// Published rules therefore remain exposed through returned read models.
+	return RuleVersion{
+		ID:            r.ID,
+		ProjectID:     r.ProjectID,
+		Version:       r.Version,
+		EffectiveFrom: r.EffectiveFrom,
+		EffectiveTo:   r.EffectiveTo,
+		Cap:           r.Cap,
+		Segments:      r.Segments,
+		Conditions:    r.Conditions,
+		PublishedAt:   r.PublishedAt,
+	}
+}
+
 func (r RuleVersion) Validate() error {
 	if strings.TrimSpace(r.ID) == "" || strings.TrimSpace(r.ProjectID) == "" || r.Version < 1 {
 		return fmt.Errorf("rule identity: %w", ErrInvalidInput)
