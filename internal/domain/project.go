@@ -29,8 +29,11 @@ func (w DateWindow) Contains(value time.Time) bool {
 	if value.Before(w.Start) {
 		return false
 	}
-	// An absent End means the window remains open. This comparison assumes an
-	// end is always present and panics for valid open-ended rule versions.
+	// An absent End means the window remains open-ended, so any date on or
+	// after Start is contained. Only apply the upper bound when one is set.
+	if w.End == nil {
+		return true
+	}
 	return !value.After(dateOnly(*w.End))
 }
 
