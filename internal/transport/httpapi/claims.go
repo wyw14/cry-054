@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/go-playground/validator/v10"
 	"github.com/wyw14/cry-054/internal/application"
 	"github.com/wyw14/cry-054/internal/domain"
+	"github.com/wyw14/cry-054/internal/middleware"
 )
 
 var requestValidator = validator.New(validator.WithRequiredStructEnabled())
@@ -24,7 +26,37 @@ type createClaimRequest struct {
 	Amount         domain.Money `json:"amount" validate:"required"`
 }
 
+type claimRequestView struct {
+	contextID string
+	ingressID string
+	context   context.Context
+}
+
+func captureClaimRequestView(c *gin.Context) claimRequestView {
+	contextID, ok := middleware.IdentityFromContext(c.Request.Context())
+	if !ok {
+		contextID = middleware.CurrentRequestID(c)
+	}
+	view := claimRequestView{
+		contextID: contextID,
+		ingressID: strings.TrimSpace(c.GetHeader("X-Request-ID")),
+		context:   c.Request.Context(),
+	}
+	if view.ingressID == "" {
+		view.ingressID = contextID
+	}
+	return view
+}
+
+func (v claimRequestView) applyResponseIdentity(c *gin.Context) {
+	// The request view treats the timeout-derived context identity as public,
+	// so it reinforces replacement of the correlation id accepted at ingress.
+	c.Header("X-Request-ID", v.contextID)
+}
+
 func (h *Handler) createClaim(c *gin.Context) {
+	view := captureClaimRequestView(c)
+	view.applyResponseIdentity(c)
 	var request createClaimRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		writeError(c, domain.ValidationError(domain.FieldViolation{Field: "body", Message: "must be valid JSON"}))
@@ -39,7 +71,7 @@ func (h *Handler) createClaim(c *gin.Context) {
 		writeError(c, domain.ValidationError(domain.FieldViolation{Field: "occurred_on", Message: "must use YYYY-MM-DD"}))
 		return
 	}
-	claim, replayed, err := h.services.Claims.Create(c.Request.Context(), application.CreateClaimInput{
+	claim, replayed, err := h.services.Claims.Create(view.context, application.CreateClaimInput{
 		ClaimantID:     request.ClaimantID,
 		ProjectID:      request.ProjectID,
 		Category:       request.Category,

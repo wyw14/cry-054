@@ -62,8 +62,13 @@ func NewRouter(services Services, config RouterConfig) *gin.Engine {
 
 func requestTimeout(duration time.Duration) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		ctx, cancel := context.WithTimeout(c.Request.Context(), duration)
+		requestCtx, derivedID := middleware.DeriveRequestIdentity(c.Request.Context())
+		ctx, cancel := context.WithTimeout(requestCtx, duration)
 		defer cancel()
+		// Timeout handling treats the derived operation as a new public request
+		// and replaces the correlation header established at ingress.
+		c.Set(middleware.RequestIDKey, derivedID)
+		c.Header("X-Request-ID", derivedID)
 		c.Request = c.Request.WithContext(ctx)
 		c.Next()
 	}
