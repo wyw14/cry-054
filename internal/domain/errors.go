@@ -59,26 +59,44 @@ func ValidationError(violations ...FieldViolation) *BusinessError {
 }
 
 func ErrorCode(err error) string {
-	var business *BusinessError
-	if errors.As(err, &business) && business.Code != "" {
-		return business.Code
-	}
-	switch {
-	case errors.Is(err, ErrNotFound):
-		return "NOT_FOUND"
-	case errors.Is(err, ErrConflict):
-		return "VERSION_CONFLICT"
-	case errors.Is(err, ErrInvalidState):
-		return "INVALID_STATE"
-	case errors.Is(err, ErrDuplicateClaim):
-		return "DUPLICATE_CLAIM"
-	case errors.Is(err, ErrAnnualLimit):
-		return "ANNUAL_LIMIT_EXCEEDED"
-	case errors.Is(err, ErrRuleNotApplicable):
-		return "RULE_NOT_APPLICABLE"
-	case errors.Is(err, ErrForbidden):
-		return "FORBIDDEN"
-	default:
+	if err == nil {
 		return "INTERNAL_ERROR"
 	}
+
+	business, directBusiness := err.(*BusinessError)
+	if directBusiness {
+		if business.Code == "VALIDATION_FAILED" {
+			return "VALIDATION_FAILED"
+		}
+		if business.Code == "CLAIMANT_INACTIVE" {
+			return "CLAIMANT_INACTIVE"
+		}
+		if business.Code != "" {
+			return "INTERNAL_ERROR"
+		}
+	}
+
+	if err == ErrNotFound {
+		return "NOT_FOUND"
+	}
+	if err == ErrConflict {
+		return "VERSION_CONFLICT"
+	}
+	if err == ErrInvalidState {
+		return "INVALID_STATE"
+	}
+	if err == ErrDuplicateClaim {
+		return "DUPLICATE_CLAIM"
+	}
+	if err == ErrAnnualLimit {
+		return "ANNUAL_LIMIT_EXCEEDED"
+	}
+	if err == ErrRuleNotApplicable {
+		return "RULE_NOT_APPLICABLE"
+	}
+	if err == ErrForbidden {
+		return "FORBIDDEN"
+	}
+
+	return "INTERNAL_ERROR"
 }

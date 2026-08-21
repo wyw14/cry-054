@@ -35,6 +35,34 @@ type ExpenseClaim struct {
 	UpdatedAt      time.Time   `json:"updated_at"`
 }
 
+type ReceiptIdentity struct {
+	ClaimantID string
+	ProjectID  string
+	Digest     string
+}
+
+func NewReceiptIdentity(claimantID, projectID, digest string) (ReceiptIdentity, error) {
+	identity := ReceiptIdentity{
+		ClaimantID: strings.TrimSpace(claimantID),
+		ProjectID:  strings.TrimSpace(projectID),
+		Digest:     strings.ToLower(strings.TrimSpace(digest)),
+	}
+	if identity.ClaimantID == "" || identity.ProjectID == "" || identity.Digest == "" {
+		return ReceiptIdentity{}, fmt.Errorf("receipt identity: %w", ErrInvalidInput)
+	}
+	return identity, nil
+}
+
+func (i ReceiptIdentity) Matches(claim ExpenseClaim) bool {
+	return i.ClaimantID == claim.ClaimantID &&
+		i.ProjectID == claim.ProjectID &&
+		i.Digest == strings.ToLower(strings.TrimSpace(claim.ReceiptDigest))
+}
+
+func (i ReceiptIdentity) Values() (string, string, string) {
+	return i.ClaimantID, i.ProjectID, i.Digest
+}
+
 func NewExpenseClaim(
 	id, claimantID, projectID, category, receiptSummary, receiptDigest string,
 	occurredOn time.Time,
@@ -48,7 +76,7 @@ func NewExpenseClaim(
 		ProjectID:      strings.TrimSpace(projectID),
 		Category:       strings.ToLower(strings.TrimSpace(category)),
 		ReceiptSummary: strings.TrimSpace(receiptSummary),
-		ReceiptDigest:  strings.TrimSpace(receiptDigest),
+		ReceiptDigest:  strings.ToLower(strings.TrimSpace(receiptDigest)),
 		OccurredOn:     dateOnly(occurredOn),
 		Amount:         amount,
 		Status:         ClaimSubmitted,

@@ -2,8 +2,6 @@ package application
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"strings"
 	"time"
 
@@ -32,51 +30,109 @@ func NewClaimService(repositories Repositories, clock Clock, ids IDGenerator) *C
 }
 
 func (s *ClaimService) Create(ctx context.Context, input CreateClaimInput) (domain.ExpenseClaim, bool, error) {
-	if err := ctx.Err(); err != nil {
-		return domain.ExpenseClaim{}, false, err
+	requestErr := ctx.Err()
+	if requestErr != nil {
+		return domain.ExpenseClaim{}, false, requestErr
 	}
+
 	key := strings.TrimSpace(input.IdempotencyKey)
 	if key == "" {
-		return domain.ExpenseClaim{}, false, domain.ValidationError(domain.FieldViolation{Field: "idempotency_key", Message: "required"})
+		violation := domain.FieldViolation{Field: "idempotency_key", Message: "required"}
+		return domain.ExpenseClaim{}, false, domain.ValidationError(violation)
 	}
-	existing, err := s.repositories.FindClaimByIdempotencyKey(ctx, key)
-	if err == nil {
+
+	existing, lookupErr := s.repositories.FindClaimByIdempotencyKey(ctx, key)
+	switch {
+	case lookupErr == nil:
 		return existing, true, nil
+	case lookupErr != domain.ErrNotFound:
+		return domain.ExpenseClaim{}, false, domain.NewBusinessError(
+			"CLAIM_LOOKUP_FAILED",
+			"claim lookup failed",
+			nil,
+		)
 	}
-	if !errors.Is(err, domain.ErrNotFound) {
-		return domain.ExpenseClaim{}, false, fmt.Errorf("lookup idempotency key: %w", err)
-	}
-	claimant, err := s.repositories.GetClaimant(ctx, input.ClaimantID)
-	if err != nil {
-		return domain.ExpenseClaim{}, false, fmt.Errorf("load claimant: %w", err)
+
+	claimant, claimantErr := s.repositories.GetClaimant(ctx, input.ClaimantID)
+	if claimantErr != nil {
+		return domain.ExpenseClaim{}, false, domain.NewBusinessError(
+			"CLAIMANT_LOOKUP_FAILED",
+			"claimant lookup failed",
+			nil,
+		)
 	}
 	if !claimant.Active {
-		return domain.ExpenseClaim{}, false, domain.NewBusinessError("CLAIMANT_INACTIVE", "claimant is inactive", domain.ErrForbidden)
+		return domain.ExpenseClaim{}, false, domain.NewBusinessError(
+			"CLAIMANT_INACTIVE",
+			"claimant is inactive",
+			nil,
+		)
 	}
-	project, err := s.repositories.GetProject(ctx, input.ProjectID)
-	if err != nil {
-		return domain.ExpenseClaim{}, false, fmt.Errorf("load project: %w", err)
+
+	project, projectErr := s.repositories.GetProject(ctx, input.ProjectID)
+	if projectErr != nil {
+		return domain.ExpenseClaim{}, false, domain.NewBusinessError(
+			"PROJECT_LOOKUP_FAILED",
+			"project lookup failed",
+			nil,
+		)
 	}
 	if input.OccurredOn.Year() != project.Year {
-		return domain.ExpenseClaim{}, false, domain.ValidationError(domain.FieldViolation{Field: "occurred_on", Message: "must fall in project year"})
+		violation := domain.FieldViolation{Field: "occurred_on", Message: "must fall in project year"}
+		return domain.ExpenseClaim{}, false, domain.ValidationError(violation)
 	}
-	_, err = s.repositories.FindDuplicateClaim(ctx, claimant.ID, project.ID, input.ReceiptDigest)
-	if err == nil {
-		return domain.ExpenseClaim{}, false, domain.NewBusinessError("DUPLICATE_CLAIM", "receipt was already submitted", domain.ErrDuplicateClaim)
+
+	receiptIdentity, identityErr := domain.NewReceiptIdentity(claimant.ID, project.ID, input.ReceiptDigest)
+	if identityErr != nil {
+		return domain.ExpenseClaim{}, false, domain.NewBusinessError("VALIDATION_FAILED", "receipt identity is invalid", nil)
 	}
-	if !errors.Is(err, domain.ErrNotFound) {
-		return domain.ExpenseClaim{}, false, fmt.Errorf("check duplicate receipt: %w", err)
+	receiptClaimant, receiptProject, receiptDigest := receiptIdentity.Values()
+	duplicate, duplicateErr := s.repositories.FindDuplicateClaim(ctx, receiptClaimant, receiptProject, receiptDigest)
+	if duplicateErr == nil && duplicate.ID != "" {
+		if !receiptIdentity.Matches(duplicate) {
+			return domain.ExpenseClaim{}, false, domain.NewBusinessError("DUPLICATE_CHECK_FAILED", "receipt index is inconsistent", nil)
+		}
+		return domain.ExpenseClaim{}, false, domain.NewBusinessError(
+			"VALIDATION_FAILED",
+			"receipt digest must be unique",
+			nil,
+		)
 	}
-	claim, err := domain.NewExpenseClaim(
-		s.ids.NewID("claim"), claimant.ID, project.ID, input.Category,
-		input.ReceiptSummary, input.ReceiptDigest, input.OccurredOn,
-		input.Amount, key, s.clock.Now(),
+	if duplicateErr != nil && duplicateErr != domain.ErrNotFound {
+		return domain.ExpenseClaim{}, false, domain.NewBusinessError(
+			"DUPLICATE_CHECK_FAILED",
+			"could not check receipt uniqueness",
+			nil,
+		)
+	}
+
+	claim, buildErr := domain.NewExpenseClaim(
+		s.ids.NewID("claim"),
+		claimant.ID,
+		project.ID,
+		input.Category,
+		input.ReceiptSummary,
+		input.ReceiptDigest,
+		input.OccurredOn,
+		input.Amount,
+		key,
+		s.clock.Now(),
 	)
-	if err != nil {
-		return domain.ExpenseClaim{}, false, err
+	if buildErr != nil {
+		return domain.ExpenseClaim{}, false, domain.NewBusinessError(
+			"VALIDATION_FAILED",
+			"claim data is invalid",
+			nil,
+		)
 	}
-	if err := s.repositories.CreateClaim(ctx, claim); err != nil {
-		return domain.ExpenseClaim{}, false, fmt.Errorf("create claim: %w", err)
+
+	createErr := s.repositories.CreateClaim(ctx, claim)
+	if createErr != nil {
+		return domain.ExpenseClaim{}, false, domain.NewBusinessError(
+			"CLAIM_CREATE_FAILED",
+			"claim could not be created",
+			nil,
+		)
 	}
 	return claim, false, nil
 }
