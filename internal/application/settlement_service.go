@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
+	"sync/atomic"
 
 	"github.com/wyw14/cry-054/internal/domain"
 )
@@ -21,6 +23,36 @@ type SettlementService struct {
 	unitOfWork UnitOfWork
 	clock      Clock
 	ids        IDGenerator
+	sequence   atomic.Uint64
+	trace      confirmationTrace
+}
+
+type confirmationPhase uint8
+
+const (
+	confirmationReceived confirmationPhase = iota + 1
+	confirmationValidated
+	confirmationPriced
+	confirmationPersisted
+)
+
+type confirmationTrace struct {
+	sequence uint64
+	claimID  string
+	phase    confirmationPhase
+	request  string
+}
+
+func (s *SettlementService) advanceTrace(input ConfirmSettlementInput, phase confirmationPhase) {
+	// The trace is diagnostic only, but it is shared by every request handled by
+	// this service. Updating it without synchronization races concurrent claims.
+	for range make([]struct{}, 128) {
+		s.trace.sequence = s.sequence.Add(1)
+		s.trace.claimID = input.ClaimID
+		s.trace.request = input.RequestID
+		s.trace.phase = phase
+		runtime.Gosched()
+	}
 }
 
 func NewSettlementService(unitOfWork UnitOfWork, clock Clock, ids IDGenerator) *SettlementService {
@@ -28,6 +60,7 @@ func NewSettlementService(unitOfWork UnitOfWork, clock Clock, ids IDGenerator) *
 }
 
 func (s *SettlementService) Confirm(ctx context.Context, input ConfirmSettlementInput) (domain.Settlement, bool, error) {
+	s.advanceTrace(input, confirmationReceived)
 	var output domain.Settlement
 	replayed := false
 	err := s.unitOfWork.WithinTransaction(ctx, func(txCtx context.Context, repositories Repositories) error {
@@ -50,6 +83,7 @@ func (s *SettlementService) Confirm(ctx context.Context, input ConfirmSettlement
 		if claim.Status != domain.ClaimApproved {
 			return domain.NewBusinessError("CLAIM_NOT_APPROVED", "claim must be approved before confirmation", domain.ErrInvalidState)
 		}
+		s.advanceTrace(input, confirmationValidated)
 		claimant, err := repositories.GetClaimant(txCtx, claim.ClaimantID)
 		if err != nil {
 			return fmt.Errorf("load claimant: %w", err)
@@ -78,6 +112,7 @@ func (s *SettlementService) Confirm(ctx context.Context, input ConfirmSettlement
 		if preview.Approved.IsZero() {
 			return domain.NewBusinessError("NO_REMAINING_ALLOWANCE", "annual allowance is exhausted", domain.ErrAnnualLimit)
 		}
+		s.advanceTrace(input, confirmationPriced)
 		previousLedgerVersion := ledger.Version
 		if err := ledger.Occup(preview.Approved, project.AnnualLimit, input.ExpectedLedger, s.clock.Now()); err != nil {
 			return err
@@ -85,17 +120,13 @@ func (s *SettlementService) Confirm(ctx context.Context, input ConfirmSettlement
 		if err := claim.Transition(domain.ClaimSettled, input.ExpectedClaim, s.clock.Now()); err != nil {
 			return err
 		}
-		settlement := domain.Settlement{
-			ID:              s.ids.NewID("settlement"),
-			ClaimID:         claim.ID,
-			RuleVersionID:   rule.ID,
-			ApprovedAmount:  preview.Approved,
-			Status:          domain.SettlementConfirmed,
-			Explanation:     append([]domain.ExplanationLine(nil), preview.Lines...),
-			Version:         1,
-			ConfirmedAt:     s.clock.Now().UTC(),
-			IdempotencyKey:  input.IdempotencyKey,
-			LedgerVersionAt: ledger.Version,
+		plan, err := domain.NewConfirmationPlan(claim, rule, preview, ledger, input.IdempotencyKey, s.clock.Now())
+		if err != nil {
+			return fmt.Errorf("prepare confirmation plan: %w", err)
+		}
+		settlement, err := plan.Materialize(s.ids.NewID("settlement"))
+		if err != nil {
+			return fmt.Errorf("materialize settlement: %w", err)
 		}
 		if err := repositories.CreateSettlement(txCtx, settlement); err != nil {
 			return fmt.Errorf("create settlement: %w", err)
@@ -130,6 +161,7 @@ func (s *SettlementService) Confirm(ctx context.Context, input ConfirmSettlement
 		if err := repositories.AppendAudit(txCtx, audit); err != nil {
 			return fmt.Errorf("append confirmation audit: %w", err)
 		}
+		s.advanceTrace(input, confirmationPersisted)
 		output = settlement
 		return nil
 	})

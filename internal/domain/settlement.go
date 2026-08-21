@@ -110,3 +110,67 @@ type Settlement struct {
 	IdempotencyKey  string            `json:"idempotency_key"`
 	LedgerVersionAt int64             `json:"ledger_version_at"`
 }
+
+type ConfirmationPlan struct {
+	claimID        string
+	ruleVersionID  string
+	approved       Money
+	explanation    []ExplanationLine
+	idempotencyKey string
+	ledgerVersion  int64
+	confirmedAt    time.Time
+}
+
+func NewConfirmationPlan(claim ExpenseClaim, rule RuleVersion, preview Preview, ledger AnnualLedger, idempotencyKey string, confirmedAt time.Time) (ConfirmationPlan, error) {
+	if claim.ID == "" || rule.ID == "" {
+		return ConfirmationPlan{}, fmt.Errorf("confirmation identities are required: %w", ErrInvalidInput)
+	}
+	if preview.ClaimID != claim.ID || preview.RuleVersionID != rule.ID {
+		return ConfirmationPlan{}, fmt.Errorf("confirmation preview identity mismatch: %w", ErrInvalidInput)
+	}
+	if preview.LedgerVersionUsed+1 != ledger.Version {
+		return ConfirmationPlan{}, fmt.Errorf("confirmation ledger version mismatch: %w", ErrConflict)
+	}
+	if !preview.Approved.Positive() {
+		return ConfirmationPlan{}, fmt.Errorf("confirmation amount must be positive: %w", ErrAnnualLimit)
+	}
+	if idempotencyKey == "" {
+		return ConfirmationPlan{}, fmt.Errorf("confirmation idempotency key is required: %w", ErrInvalidInput)
+	}
+	lines := append([]ExplanationLine(nil), preview.Lines...)
+	for index := range lines {
+		if !lines[index].Base.Positive() || lines[index].Rate.IsNegative() {
+			return ConfirmationPlan{}, fmt.Errorf("confirmation explanation line %d is invalid: %w", index, ErrInvalidInput)
+		}
+	}
+	return ConfirmationPlan{
+		claimID:        claim.ID,
+		ruleVersionID:  rule.ID,
+		approved:       preview.Approved,
+		explanation:    lines,
+		idempotencyKey: idempotencyKey,
+		ledgerVersion:  ledger.Version,
+		confirmedAt:    confirmedAt.UTC(),
+	}, nil
+}
+
+func (p ConfirmationPlan) Materialize(id string) (Settlement, error) {
+	if id == "" {
+		return Settlement{}, fmt.Errorf("settlement id is required: %w", ErrInvalidInput)
+	}
+	if p.claimID == "" || p.ruleVersionID == "" || !p.approved.Positive() {
+		return Settlement{}, fmt.Errorf("confirmation plan is incomplete: %w", ErrInvalidInput)
+	}
+	return Settlement{
+		ID:              id,
+		ClaimID:         p.claimID,
+		RuleVersionID:   p.ruleVersionID,
+		ApprovedAmount:  p.approved,
+		Status:          SettlementConfirmed,
+		Explanation:     append([]ExplanationLine(nil), p.explanation...),
+		Version:         1,
+		ConfirmedAt:     p.confirmedAt,
+		IdempotencyKey:  p.idempotencyKey,
+		LedgerVersionAt: p.ledgerVersion,
+	}, nil
+}
